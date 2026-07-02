@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "livekit-tts-fallback"
+version = "0.1.0"
+description = "Composable LiveKit TTS fallback with OCI xAI and OCI Speech providers"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "TTS Fallback maintainers" }]
+keywords = ["livekit", "tts", "oci", "xai", "fallback"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "livekit-agents>=1.5,<1.6",
+  "oci>=2.155",
+  "websockets>=14,<16",
+]
+
+[project.urls]
+Documentation = "https://github.com/julianoce-oracle/livekit-tts-fallback#readme"
+Repository = "https://github.com/julianoce-oracle/livekit-tts-fallback"
+Issues = "https://github.com/julianoce-oracle/livekit-tts-fallback/issues"
+
+[project.optional-dependencies]
+elevenlabs = ["livekit-plugins-elevenlabs>=1.5,<1.6"]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.11,<1",
+]
+all = ["livekit-plugins-elevenlabs>=1.5,<1.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
