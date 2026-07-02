@@ -176,7 +176,7 @@ ao pool. Conexões quebradas, vencidas ou liberadas após erro são fechadas. O 
 
 `FallbackPolicy.max_retry_per_tts` controla quantos retries internos o LiveKit realiza antes
 de seguir para o próximo provider. O padrão desta biblioteca é zero para evitar multiplicar
-a latência de voz. Isso não é um threshold temporal nem um circuit breaker separado.
+a latência de voz. Ou seja, quando `max_retry_per_tts=0` faz a biblioteca não repetir a mesma chamada no provider que falhou.
 
 `FallbackPolicy.prewarm_fallbacks=False` aquece somente o primeiro provider. Quando definido
 como `True`, chama `prewarm()` em toda a cadeia; cada provider decide o que pode preparar.
@@ -234,25 +234,74 @@ RESULT=OK winner=oci-speech elapsed_ms=1233.342 frames=26 pcm_bytes=213644 outpu
 
 ### Modos de execução
 
-No modo padrão, o xAI não é chamado. O script usa `ForcedInternalFailureTTS` para reproduzir
-uma falha interna antes do áudio e exercitar deterministicamente o fallback real:
+A API da xAI não é chamada. O script usa `ForcedInternalFailureTTS` para reproduzir
+uma falha interna antes do áudio e exercitar deterministicamente o fallback real. Ou seja, quando o LiveKit tenta sintetizar uma fala com ele, a classe gera intencionalmente um APIConnectionError antes de emitir qualquer frame de áudio:
 
 ```bash
 python scripts/test_oci_speech_fallback.py \
   --env-file .env
 ```
 
-Para chamar o OCI xAI real como primary, adicione `--real-primary`:
+## Teste de recuperação do xAI em uma janela de 30 segundos
+
+O script `scripts/test_xai_recovery_window.py` valida o fluxo completo
+`OCI xAI indisponível -> OCI Speech -> OCI xAI recuperado`.
+Uma barreira interna força falhas antes do primeiro áudio por um período configurável. Depois
+desse período, o próximo probe usa o WebSocket OCI xAI real.
 
 ```bash
-python scripts/test_oci_speech_fallback.py \
+cd livekit-tts-fallback
+source .venv/bin/activate
+
+OCI_SPEECH_PROFILE=DEFAULT \
+python scripts/test_xai_recovery_window.py \
   --env-file .env \
-  --real-primary
+  --monitor-seconds 30 \
+  --recover-after-seconds 12 \
+  --probe-interval-seconds 3 \
+  --output-dir /tmp/livekit-xai-recovery-window
 ```
 
-Nesse modo, OCI Speech só é chamado quando a requisição real ao xAI falha antes de emitir o
-primeiro frame de áudio. O resultado informa `winner=oci-xai` quando o primary responde e
-`winner=oci-speech` quando o fallback é acionado.
+O fluxo esperado é:
+
+1. A primeira síntese falha internamente no primary e produz áudio com OCI Speech.
+2. O LiveKit marca OCI xAI como indisponível.
+3. O script envia uma síntese curta a cada intervalo para acionar o mecanismo nativo de recovery.
+4. Antes de 12 segundos, esses probes continuam falhando internamente e OCI Speech atende.
+5. Depois de 12 segundos, o recovery probe abre o WebSocket OCI xAI real.
+6. O LiveKit emite `available=True`, e a fala final precisa terminar com `winner=oci-xai`.
+
+A janela de 30 segundos é o limite máximo de espera. O script termina antes quando detecta a
+recuperação. Os áudios de validação são salvos como:
+
+- `01-initial-oci-speech.wav`
+- `02-restored-oci-xai.wav`
+
+Opções principais:
+
+| Opção | Padrão | Descrição |
+| --- | --- | --- |
+| `--monitor-seconds` | `30` | Limite máximo para o xAI recuperar. |
+| `--recover-after-seconds` | `12` | Duração da falha interna simulada antes de permitir xAI real. |
+| `--probe-interval-seconds` | `3` | Intervalo entre sínteses que acionam recovery probes. |
+| `--request-timeout-seconds` | timeout OCI Speech + 5 | Timeout de cada síntese. |
+| `--output-dir` | `/tmp/livekit-xai-recovery-window` | Diretório dos dois WAVs. |
+| `--verbose-livekit` | desabilitado | Exibe os tracebacks esperados de fallback e recovery. |
+
+O FallbackAdapter do LiveKit não executa verificações periódicas enquanto nenhuma fala está sendo sintetizada. Portanto, se o xAI for marcado como indisponível e a aplicação ficar ociosa, o LiveKit não enviará requisições em background para verificar se ele voltou.
+A recuperação acontece quando uma nova síntese passa pela cadeia:
+Nova síntese
+  -> xAI está marcado como indisponível
+  -> LiveKit usa OCI Speech para produzir o áudio
+  -> em paralelo, tenta sintetizar o mesmo texto no xAI
+  -> se o xAI responder, ele volta a ser marcado como disponível
+  -> a próxima síntese volta a priorizar o xAI
+O script de teste precisa gerar pequenas sínteses em intervalos regulares porque, sem novas requisições, o mecanismo nativo de recuperação não seria acionado.
+Essas requisições não são health checks simples. Cada uma é uma síntese TTS completa:
+OCI Speech gera o áudio enquanto o xAI está indisponível;
+o LiveKit também tenta usar o xAI como teste de recuperação;
+ambas as chamadas podem consumir cota e gerar cobrança.
+Por isso, o script é apropriado para validar o fluxo de fallback e recuperação, mas não deve ser usado como monitor contínuo de produção.
 
 ### Opções
 
@@ -299,61 +348,9 @@ python scripts/test_oci_speech_fallback.py \
   --env-file .env
 ```
 
-As variáveis antigas `XAI_CIRCUIT_*` não são usadas por este teste. Recuperação e
-disponibilidade são controladas pelo `tts.FallbackAdapter` nativo do LiveKit. O processo
-retorna código `0` em caso de sucesso e `1` quando o fallback não gera áudio ou alguma
+O processo retorna código `0` em caso de sucesso e `1` quando o fallback não gera áudio ou alguma
 configuração é inválida.
 
-## Teste de recuperação do xAI em uma janela de 30 segundos
-
-O script `scripts/test_xai_recovery_window.py` valida o fluxo completo
-`OCI xAI indisponível -> OCI Speech -> OCI xAI recuperado`. Ele não altera a API key.
-Uma barreira interna força falhas antes do primeiro áudio por um período configurável. Depois
-desse período, o próximo probe usa o WebSocket OCI xAI real.
-
-```bash
-cd livekit-tts-fallback
-source .venv/bin/activate
-
-OCI_SPEECH_PROFILE=DEFAULT \
-python scripts/test_xai_recovery_window.py \
-  --env-file .env \
-  --monitor-seconds 30 \
-  --recover-after-seconds 12 \
-  --probe-interval-seconds 3 \
-  --output-dir /tmp/livekit-xai-recovery-window
-```
-
-O fluxo esperado é:
-
-1. A primeira síntese falha internamente no primary e produz áudio com OCI Speech.
-2. O LiveKit marca OCI xAI como indisponível.
-3. O script envia uma síntese curta a cada intervalo para acionar o mecanismo nativo de recovery.
-4. Antes de 12 segundos, esses probes continuam falhando internamente e OCI Speech atende.
-5. Depois de 12 segundos, o recovery probe abre o WebSocket OCI xAI real.
-6. O LiveKit emite `available=True`, e a fala final precisa terminar com `winner=oci-xai`.
-
-A janela de 30 segundos é o limite máximo de espera. O script termina antes quando detecta a
-recuperação. Os áudios de validação são salvos como:
-
-- `01-initial-oci-speech.wav`
-- `02-restored-oci-xai.wav`
-
-Opções principais:
-
-| Opção | Padrão | Descrição |
-| --- | --- | --- |
-| `--monitor-seconds` | `30` | Limite máximo para o xAI recuperar. |
-| `--recover-after-seconds` | `12` | Duração da falha interna simulada antes de permitir xAI real. |
-| `--probe-interval-seconds` | `3` | Intervalo entre sínteses que acionam recovery probes. |
-| `--request-timeout-seconds` | timeout OCI Speech + 5 | Timeout de cada síntese. |
-| `--output-dir` | `/tmp/livekit-xai-recovery-window` | Diretório dos dois WAVs. |
-| `--verbose-livekit` | desabilitado | Exibe os tracebacks esperados de fallback e recovery. |
-
-O `FallbackAdapter` nativo não faz polling quando a aplicação está ociosa. Ele tenta recuperar
-um provider indisponível quando uma nova síntese atravessa a cadeia. Por isso, este script gera
-requisições curtas durante a janela. Enquanto o primary está indisponível, essas requisições
-também chamam OCI Speech; este é um teste de integração, não um health check sem custo.
 
 ## Testes
 
