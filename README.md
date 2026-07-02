@@ -176,7 +176,7 @@ ao pool. Conexões quebradas, vencidas ou liberadas após erro são fechadas. O 
 
 `FallbackPolicy.max_retry_per_tts` controla quantos retries internos o LiveKit realiza antes
 de seguir para o próximo provider. O padrão desta biblioteca é zero para evitar multiplicar
-a latência de voz. Isso não é um threshold temporal nem um circuit breaker separado.
+a latência de voz. Ou seja, quando `max_retry_per_tts=0` faz a biblioteca não repetir a mesma chamada no provider que falhou. Isso não é um threshold temporal nem um circuit breaker separado.
 
 `FallbackPolicy.prewarm_fallbacks=False` aquece somente o primeiro provider. Quando definido
 como `True`, chama `prewarm()` em toda a cadeia; cada provider decide o que pode preparar.
