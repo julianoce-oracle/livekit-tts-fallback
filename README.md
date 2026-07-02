@@ -8,6 +8,10 @@ escolhe explicitamente os fallbacks. A biblioteca inclui OCI Speech e um helper 
 para o plugin oficial da ElevenLabs, mas aceita qualquer implementação de
 `livekit.agents.tts.TTS`.
 
+## Arquitetura
+
+![Arquitetura do fallback TTS para LiveKit](docs/images/livekit-tts-fallback-architecture.png)
+
 ## Comportamento
 
 - Os providers são tentados na ordem informada.
