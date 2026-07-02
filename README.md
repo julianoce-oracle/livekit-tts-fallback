@@ -10,7 +10,7 @@ para o plugin oficial da ElevenLabs, mas aceita qualquer implementação de
 
 ## Arquitetura
 
-![Arquitetura do fallback TTS para LiveKit](docs/images/livekit-tts-fallback-architecture.png)
+![Arquitetura do fallback TTS para LiveKit](docs/images/livekit-tts-fallback-architecture-v2.png)
 
 ## Comportamento
 
