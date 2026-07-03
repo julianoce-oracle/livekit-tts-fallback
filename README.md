@@ -1,30 +1,30 @@
 # LiveKit TTS Fallback
 
-Biblioteca Python para compor uma cadeia de TTS usando o
+A Python library for composing a resilient TTS provider chain with
 `livekit.agents.tts.FallbackAdapter`.
 
-O provider principal incluído é OCI Generative AI xAI Voice por WebSocket. O usuário
-escolhe explicitamente os fallbacks. Para OCI Speech, o pacote inclui o plugin `oracle`
-e o utiliza como qualquer outra implementação de `livekit.agents.tts.TTS`. Também existe
-um helper opcional para o plugin oficial da ElevenLabs.
+The included primary provider is OCI Generative AI xAI Voice over WebSocket. Users
+explicitly choose the fallback providers and their order. For OCI Speech, the package
+includes the `oracle` plugin and uses it like any other `livekit.agents.tts.TTS`
+implementation. An optional helper for the official ElevenLabs plugin is also available.
 
-## Arquitetura
+## Architecture
 
-![Arquitetura do fallback TTS para LiveKit](docs/images/livekit-tts-fallback-architecture-v2.png)
+![LiveKit TTS fallback architecture](docs/images/livekit-tts-fallback-architecture-v3.png)
 
-## Comportamento
+## Behavior
 
-- Os providers são tentados na ordem informada.
-- O fallback acontece somente se a falha ocorrer antes do primeiro áudio.
-- Se uma fala já começou, o LiveKit não reinicia o texto em outro provider.
-- Providers indisponíveis são recuperados pelo mecanismo nativo do LiveKit.
-- OCI xAI reaproveita sessões WebSocket entre falas por meio de um pool.
-- `oracle.TTS` reutiliza o cliente SDK e recebe o áudio PCM em chunks HTTPS por fala.
-- ElevenLabs e providers externos gerenciam seus próprios transportes.
-- Sample rates diferentes são reamostrados pelo `FallbackAdapter`; todos os providers
-  precisam produzir áudio mono.
+- Providers are attempted in the order supplied by the user.
+- Fallback occurs only when a provider fails before emitting the first audio frame.
+- After speech has started, LiveKit does not restart the same text with another provider.
+- Unavailable providers are recovered by LiveKit's native recovery mechanism.
+- OCI xAI reuses WebSocket sessions across utterances through a connection pool.
+- `oracle.TTS` reuses the OCI SDK client and receives PCM audio in HTTPS chunks for each utterance.
+- ElevenLabs and external providers manage their own transports.
+- `FallbackAdapter` resamples providers with different sample rates. Every provider must
+  produce mono audio.
 
-## Instalação
+## Installation
 
 ```bash
 git clone https://github.com/julianoce-oracle/livekit-tts-fallback.git
@@ -35,29 +35,29 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Para permitir que o usuário escolha ElevenLabs:
+To make ElevenLabs available as a user-selected fallback:
 
 ```bash
 python -m pip install -e '.[elevenlabs]'
 ```
 
-Para desenvolvimento:
+For development:
 
 ```bash
 python -m pip install -e '.[dev]'
 ```
 
-## Configuração
+## Configuration
 
-Crie um arquivo local a partir do modelo e preencha somente os providers usados:
+Create a local configuration file from the template and populate only the providers you use:
 
 ```bash
 cp .env.example .env
 ```
 
-Nunca versione `.env`, API keys, arquivos de chave privada ou áudios gerados.
+Never commit `.env`, API keys, private key files, generated audio, or other credentials.
 
-## OCI xAI principal com OCI Speech como fallback
+## OCI xAI primary with OCI Speech fallback
 
 ```python
 import os
@@ -111,18 +111,19 @@ session = AgentSession(
 )
 ```
 
-O plugin `oracle.TTS` envia `is_stream_enabled=True` para OCI Speech e consome
-`response.data.raw.stream()`. Ele declara `streaming=False` no LiveKit porque precisa
-receber o texto completo antes de iniciar cada requisição; isso não desativa os chunks de
-áudio da resposta HTTPS.
+The `oracle.TTS` plugin sends `is_stream_enabled=True` to OCI Speech and consumes
+`response.data.raw.stream()`. It declares `streaming=False` to LiveKit because OCI
+Speech requires the complete input text before each request begins. These settings describe
+different directions of the operation: LiveKit text-input streaming is disabled, while the
+OCI HTTPS audio response is still consumed incrementally in chunks.
 
-Nenhum fallback é adicionado automaticamente. Para usar somente OCI xAI:
+No fallback is added automatically. To use only OCI xAI:
 
 ```python
 fallback_tts = build_fallback_tts(primary)
 ```
 
-## ElevenLabs como escolha do usuário
+## ElevenLabs as a user-selected fallback
 
 ```python
 from livekit_tts_fallback import OciXaiTTS, build_fallback_tts
@@ -141,15 +142,16 @@ fallback_tts = build_fallback_tts(
 )
 ```
 
-O helper apenas importa e instancia o plugin oficial `livekit-plugins-elevenlabs`. A
-biblioteca não implementa outro cliente ElevenLabs nem seleciona esse fallback sozinha.
+The helper only imports and instantiates the official
+`livekit-plugins-elevenlabs` plugin. This library does not implement a separate
+ElevenLabs client and does not select ElevenLabs automatically.
 
-## Adicionando qualquer outro provider
+## Adding any other provider
 
-Se o provider já implementa `livekit.agents.tts.TTS`, basta fornecer a instância:
+If a provider already implements `livekit.agents.tts.TTS`, supply its instance directly:
 
 ```python
-custom_tts = MinhaImplementacaoLiveKitTTS(...)
+custom_tts = MyLiveKitTTS(...)
 
 fallback_tts = build_fallback_tts(
     primary,
@@ -157,11 +159,11 @@ fallback_tts = build_fallback_tts(
 )
 ```
 
-O provider é responsável por `synthesize()`, opcionalmente `stream()`, `prewarm()` e
-`aclose()`. Reutilização de conexão também pertence ao provider. Não existe compartilhamento
-de socket entre serviços diferentes.
+The provider owns its `synthesize()`, optional `stream()`, `prewarm()`, and
+`aclose()` behavior. Connection reuse also belongs to each provider. Sockets are never
+shared across different services.
 
-## Configuração do pool OCI xAI
+## OCI xAI connection pool
 
 ```python
 from livekit_tts_fallback import OciXaiConfig, OciXaiTTS
@@ -180,56 +182,58 @@ primary = OciXaiTTS(
 )
 ```
 
-Cada socket atende uma fala de cada vez. Ao receber `audio.done`, a conexão saudável volta
-ao pool. Conexões quebradas, vencidas ou liberadas após erro são fechadas. O TTL padrão é
-540 segundos, abaixo do limite de 600 segundos documentado para a sessão OCI xAI.
+Each socket handles one utterance at a time. After `audio.done`, a healthy connection
+returns to the pool. Broken, expired, or error-released connections are closed. The default
+TTL is 540 seconds, below the documented 600-second OCI xAI session limit.
 
-## Política de fallback
+## Fallback policy
 
-`FallbackPolicy.max_retry_per_tts` controla quantos retries internos o LiveKit realiza antes
-de seguir para o próximo provider. O padrão desta biblioteca é zero para evitar multiplicar
-a latência de voz. Ou seja, quando `max_retry_per_tts=0` faz a biblioteca não repetir a mesma chamada no provider que falhou.
+`FallbackPolicy.max_retry_per_tts` controls how many internal retries LiveKit performs
+before moving to the next provider. The library default is zero to avoid multiplying voice
+latency. With `max_retry_per_tts=0`, LiveKit does not repeat the failed request on the same
+provider before trying the fallback.
 
-`FallbackPolicy.prewarm_fallbacks=False` aquece somente o primeiro provider. Quando definido
-como `True`, chama `prewarm()` em toda a cadeia; cada provider decide o que pode preparar.
+`FallbackPolicy.prewarm_fallbacks=False` prewarms only the first provider. When set to
+`True`, the adapter invokes `prewarm()` for the entire chain, and each provider decides
+what it can prepare.
 
-## Autenticação
+## Authentication
 
-OCI xAI usa a API key do serviço Generative AI enviada como Bearer token no handshake do
-WebSocket. Ela pode ser passada diretamente em `OciXaiConfig.api_key` ou lida da variável
-configurada por `api_key_env`.
-Os parâmetros opcionais `optimize_streaming_latency` e `text_normalization` são omitidos por padrão. Quando configurado, o nível de otimização deve ser `0`, `1` ou `2`.
+OCI xAI uses a Generative AI service API key sent as a Bearer token during the WebSocket
+handshake. Pass it directly through `OciXaiConfig.api_key` or load it from the environment
+variable named by `api_key_env`.
 
-`oracle.TTS` suporta:
+The optional `optimize_streaming_latency` and `text_normalization` parameters are omitted
+by default. When configured, `optimize_streaming_latency` must be `0`, `1`, or `2`.
 
-- o `config` já carregado, como no exemplo acima;
-- profile do arquivo OCI, incluindo profile com `security_token_file`;
-- instance principal com `auth="instance_principal"`;
-- resource principal com `auth="resource_principal"`.
+`oracle.TTS` supports:
 
-O plugin não registra o conteúdo do `config`, compartment OCID, texto ou áudio.
+- a preloaded OCI `config` mapping, as shown above;
+- an OCI configuration profile, including profiles with `security_token_file`;
+- instance principal authentication with `auth="instance_principal"`;
+- resource principal authentication with `auth="resource_principal"`.
 
-Credenciais, textos e áudio não são registrados nos logs da biblioteca.
+The plugin does not log OCI configuration content, compartment OCIDs, input text, or audio.
+The library does not log credentials, text, or audio payloads.
 
-## Encerramento
+## Lifecycle and shutdown
 
-O objeto deve viver pelo mesmo tempo que a `AgentSession`, preservando pool e estado de
-disponibilidade. No encerramento:
+Keep the adapter alive for the same lifetime as the `AgentSession` so it can preserve the
+connection pool and provider availability state. During shutdown:
 
 ```python
 await fallback_tts.aclose()
 ```
 
-`ManagedFallbackAdapter` encerra as tarefas de recuperação do LiveKit e os providers que
-recebeu. Use `close_providers=False` somente quando o ciclo de vida for controlado por outro
-componente.
+`ManagedFallbackAdapter` closes LiveKit recovery tasks and every provider it owns. Use
+`close_providers=False` only when another component controls provider lifecycles.
 
-## Teste de integração do fallback OCI Speech
+## OCI Speech fallback integration test
 
-O script `scripts/test_oci_speech_fallback.py` valida a cadeia LiveKit usando o OCI Speech
-real. Por padrão, ele força uma falha interna no provider principal antes do primeiro frame,
-sem alterar ou invalidar credenciais. Assim, o teste confirma especificamente que o
-`FallbackAdapter` seleciona OCI Speech e produz áudio.
+The `scripts/test_oci_speech_fallback.py` script validates the LiveKit chain against the
+real OCI Speech service. By default, it forces an internal primary-provider failure before
+the first audio frame without modifying or invalidating credentials. This specifically
+confirms that `FallbackAdapter` selects OCI Speech and produces audio.
 
 ```bash
 cd livekit-tts-fallback
@@ -240,29 +244,101 @@ python scripts/test_oci_speech_fallback.py \
   --env-file .env
 ```
 
-O arquivo padrão é `/tmp/livekit-oci-speech-fallback.wav`. Um resultado bem-sucedido termina
-com uma linha semelhante a:
+The default output is `/tmp/livekit-oci-speech-fallback.wav`. A successful run ends with
+a line similar to:
 
 ```text
 RESULT=OK winner=oci-speech elapsed_ms=1233.342 frames=26 pcm_bytes=213644 output=/tmp/livekit-oci-speech-fallback.wav
 ```
 
-### Modos de execução
+### Execution modes
 
-A API da xAI não é chamada. O script usa `ForcedInternalFailureTTS` para reproduzir
-uma falha interna antes do áudio e exercitar deterministicamente o fallback real. Ou seja, quando o LiveKit tenta sintetizar uma fala com ele, a classe gera intencionalmente um APIConnectionError antes de emitir qualquer frame de áudio:
+In the default mode, the script does not call OCI xAI. It uses
+`ForcedInternalFailureTTS` to deterministically reproduce an internal error before any
+audio is emitted. When LiveKit requests an utterance, this test provider intentionally
+raises `APIConnectionError`, and the real OCI Speech fallback handles the utterance:
 
 ```bash
 python scripts/test_oci_speech_fallback.py \
   --env-file .env
 ```
 
-## Teste de recuperação do xAI em uma janela de 30 segundos
+To call the real OCI xAI provider as the primary, add `--real-primary`:
 
-O script `scripts/test_xai_recovery_window.py` valida o fluxo completo
-`OCI xAI indisponível -> OCI Speech -> OCI xAI recuperado`.
-Uma barreira interna força falhas antes do primeiro áudio por um período configurável. Depois
-desse período, o próximo probe usa o WebSocket OCI xAI real.
+```bash
+python scripts/test_oci_speech_fallback.py \
+  --env-file .env \
+  --real-primary
+```
+
+In this mode, OCI Speech is called only when the real OCI xAI request fails before the
+first audio frame. The result reports `winner=oci-xai` when the primary succeeds and
+`winner=oci-speech` when fallback is activated.
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--env-file PATH` | `.env` | File containing OCI xAI and OCI Speech settings. |
+| `--text TEXT` | Built-in confirmation sentence | Text sent to the winning provider. |
+| `--output PATH` | `/tmp/livekit-oci-speech-fallback.wav` | PCM16 mono WAV produced from the frames received by LiveKit. |
+| `--real-primary` | Disabled | Uses the real OCI xAI provider instead of the controlled internal failure. |
+| `--log-level LEVEL` | `INFO` | Logging level, such as `DEBUG`, `INFO`, or `WARNING`. |
+| `-h`, `--help` | - | Displays the complete command-line help. |
+
+Example with custom text and output:
+
+```bash
+python scripts/test_oci_speech_fallback.py \
+  --env-file .env \
+  --text "This is a voice fallback test." \
+  --output /tmp/custom-fallback.wav \
+  --log-level DEBUG
+```
+
+### Environment variables
+
+For OCI Speech, the script reads `OCI_SPEECH_AUTH`, `OCI_SPEECH_CONFIG_FILE`,
+`OCI_SPEECH_PROFILE`, `OCI_SPEECH_REGION`, `OCI_SPEECH_ENDPOINT`,
+`OCI_SPEECH_COMPARTMENT_ID`, `OCI_SPEECH_TTS_MODEL`,
+`OCI_SPEECH_TTS_VOICE_ID`, `OCI_SPEECH_TTS_LANGUAGE`,
+`OCI_SPEECH_TTS_SAMPLE_RATE`, `OCI_SPEECH_TTS_FORMAT`,
+`OCI_SPEECH_TTS_TIMEOUT`, `OCI_SPEECH_TTS_CONNECT_TIMEOUT`,
+`OCI_SPEECH_TTS_CHUNK_SIZE`, and `OCI_SPEECH_TTS_STREAM_ENABLED`.
+
+The plugin requires PCM output and OCI response streaming. For compatibility with older
+configuration files, the test script overrides a non-PCM
+`OCI_SPEECH_TTS_FORMAT` with `PCM` and logs a warning.
+
+With `--real-primary`, the script also reads `OCI_XAI_API_KEY`, or
+`OCI_GENAI_API_KEY` for compatibility, plus `OCI_XAI_REGION`,
+`OCI_XAI_ENDPOINT`, `OCI_XAI_VOICE`, and `OCI_XAI_LANGUAGE`.
+
+The expected voice variable is `OCI_SPEECH_TTS_VOICE_ID`.
+`OCI_SPEECH_VOICE_ID` is not read by this script.
+
+Profiles containing `security_token_file` must be authenticated and unexpired. To select
+a different profile for a single process without editing `.env`:
+
+```bash
+OCI_SPEECH_PROFILE=DEFAULT \
+python scripts/test_oci_speech_fallback.py \
+  --env-file .env
+```
+
+The process returns exit code `0` on success and `1` when fallback produces no audio or
+configuration is invalid.
+
+## OCI xAI recovery-window integration test
+
+The `scripts/test_xai_recovery_window.py` script validates the complete flow:
+
+```text
+OCI xAI unavailable -> OCI Speech -> OCI xAI recovered
+```
+
+An internal gate forces failures before the first audio frame for a configurable period.
+After that period, the next recovery probe uses the real OCI xAI WebSocket.
 
 ```bash
 cd livekit-tts-fallback
@@ -277,102 +353,65 @@ python scripts/test_xai_recovery_window.py \
   --output-dir /tmp/livekit-xai-recovery-window
 ```
 
-O fluxo esperado é:
+Expected flow:
 
-1. A primeira síntese falha internamente no primary e produz áudio com OCI Speech.
-2. O LiveKit marca OCI xAI como indisponível.
-3. O script envia uma síntese curta a cada intervalo para acionar o mecanismo nativo de recovery.
-4. Antes de 12 segundos, esses probes continuam falhando internamente e OCI Speech atende.
-5. Depois de 12 segundos, o recovery probe abre o WebSocket OCI xAI real.
-6. O LiveKit emite `available=True`, e a fala final precisa terminar com `winner=oci-xai`.
+1. The first synthesis fails internally in the primary and OCI Speech produces the audio.
+2. LiveKit marks OCI xAI as unavailable.
+3. The script submits a short synthesis at each interval to activate LiveKit's native recovery.
+4. Before 12 seconds, the probes continue to fail internally and OCI Speech handles them.
+5. After 12 seconds, the recovery probe opens the real OCI xAI WebSocket.
+6. LiveKit emits `available=True`, and the final utterance must report `winner=oci-xai`.
 
-A janela de 30 segundos é o limite máximo de espera. O script termina antes quando detecta a
-recuperação. Os áudios de validação são salvos como:
+The 30-second window is a maximum wait time. The script exits earlier when recovery is
+detected. Validation audio is written as:
 
 - `01-initial-oci-speech.wav`
 - `02-restored-oci-xai.wav`
 
-Opções principais:
+Main options:
 
-| Opção | Padrão | Descrição |
+| Option | Default | Description |
 | --- | --- | --- |
-| `--monitor-seconds` | `30` | Limite máximo para o xAI recuperar. |
-| `--recover-after-seconds` | `12` | Duração da falha interna simulada antes de permitir xAI real. |
-| `--probe-interval-seconds` | `3` | Intervalo entre sínteses que acionam recovery probes. |
-| `--request-timeout-seconds` | timeout OCI Speech + 5 | Timeout de cada síntese. |
-| `--output-dir` | `/tmp/livekit-xai-recovery-window` | Diretório dos dois WAVs. |
-| `--verbose-livekit` | desabilitado | Exibe os tracebacks esperados de fallback e recovery. |
+| `--monitor-seconds` | `30` | Maximum time allowed for OCI xAI recovery. |
+| `--recover-after-seconds` | `12` | Duration of the simulated internal failure before real OCI xAI is allowed. |
+| `--probe-interval-seconds` | `3` | Interval between synthesis requests that activate recovery probes. |
+| `--request-timeout-seconds` | OCI Speech timeout + 5 | Timeout for each synthesis request. |
+| `--output-dir` | `/tmp/livekit-xai-recovery-window` | Directory for the two WAV files. |
+| `--verbose-livekit` | Disabled | Displays expected fallback and recovery tracebacks. |
 
-O FallbackAdapter do LiveKit não executa verificações periódicas enquanto nenhuma fala está sendo sintetizada. Portanto, se o xAI for marcado como indisponível e a aplicação ficar ociosa, o LiveKit não enviará requisições em background para verificar se ele voltou.
-A recuperação acontece quando uma nova síntese passa pela cadeia:
-Nova síntese
-  -> xAI está marcado como indisponível
-  -> LiveKit usa OCI Speech para produzir o áudio
-  -> em paralelo, tenta sintetizar o mesmo texto no xAI
-  -> se o xAI responder, ele volta a ser marcado como disponível
-  -> a próxima síntese volta a priorizar o xAI
-O script de teste precisa gerar pequenas sínteses em intervalos regulares porque, sem novas requisições, o mecanismo nativo de recuperação não seria acionado.
-Essas requisições não são health checks simples. Cada uma é uma síntese TTS completa:
-OCI Speech gera o áudio enquanto o xAI está indisponível;
-o LiveKit também tenta usar o xAI como teste de recuperação;
-ambas as chamadas podem consumir cota e gerar cobrança.
-Por isso, o script é apropriado para validar o fluxo de fallback e recuperação, mas não deve ser usado como monitor contínuo de produção.
+### How native recovery is activated
 
-### Opções
+LiveKit's `FallbackAdapter` does not poll unavailable providers while the application is
+idle. If OCI xAI is unavailable and no speech is being synthesized, LiveKit sends no
+background request to check whether it has recovered.
 
-| Opção | Padrão | Descrição |
-| --- | --- | --- |
-| `--env-file PATH` | `.env` | Arquivo com as configurações OCI xAI e OCI Speech. |
-| `--text TEXT` | Frase de confirmação em português | Texto enviado ao provider vencedor. |
-| `--output PATH` | `/tmp/livekit-oci-speech-fallback.wav` | Arquivo WAV PCM16 mono com o áudio recebido pelo LiveKit. |
-| `--real-primary` | desabilitado | Usa o OCI xAI real em vez da falha interna controlada. |
-| `--log-level LEVEL` | `INFO` | Nível de log, como `DEBUG`, `INFO` ou `WARNING`. |
-| `-h`, `--help` | - | Exibe a ajuda completa do script. |
+Recovery is activated when a new synthesis request crosses the chain:
 
-Exemplo com texto e saída personalizados:
-
-```bash
-python scripts/test_oci_speech_fallback.py \
-  --env-file .env \
-  --text "Teste do fallback de voz." \
-  --output /tmp/meu-fallback.wav \
-  --log-level DEBUG
+```text
+New synthesis request
+  -> OCI xAI is marked unavailable
+  -> LiveKit uses OCI Speech to produce audio
+  -> LiveKit concurrently attempts the same text on OCI xAI as a recovery probe
+  -> if OCI xAI succeeds, LiveKit marks it available
+  -> the next synthesis prioritizes OCI xAI again
 ```
 
-### Variáveis utilizadas
+The test script submits short synthesis requests at regular intervals because native
+recovery cannot run without new requests. These are complete TTS synthesis operations, not
+free health checks:
 
-Para OCI Speech, o script lê `OCI_SPEECH_AUTH`, `OCI_SPEECH_CONFIG_FILE`,
-`OCI_SPEECH_PROFILE`, `OCI_SPEECH_REGION`, `OCI_SPEECH_ENDPOINT`,
-`OCI_SPEECH_COMPARTMENT_ID`, `OCI_SPEECH_TTS_MODEL`, `OCI_SPEECH_TTS_VOICE_ID`,
-`OCI_SPEECH_TTS_LANGUAGE`, `OCI_SPEECH_TTS_SAMPLE_RATE`,
-`OCI_SPEECH_TTS_FORMAT`, `OCI_SPEECH_TTS_TIMEOUT`,
-`OCI_SPEECH_TTS_CONNECT_TIMEOUT`, `OCI_SPEECH_TTS_CHUNK_SIZE` e
-`OCI_SPEECH_TTS_STREAM_ENABLED`. O plugin exige formato `PCM` e streaming habilitado.
+- OCI Speech generates audio while OCI xAI is unavailable.
+- LiveKit also attempts OCI xAI to evaluate recovery.
+- Both calls can consume quota and incur charges.
 
-No modo `--real-primary`, também lê `OCI_XAI_API_KEY` (ou `OCI_GENAI_API_KEY` por compatibilidade), `OCI_XAI_REGION`,
-`OCI_XAI_ENDPOINT`, `OCI_XAI_VOICE` e `OCI_XAI_LANGUAGE`.
+This script is intended for fallback and recovery integration validation. It must not be
+used as a continuous production monitor.
 
-O nome esperado para a voz é `OCI_SPEECH_TTS_VOICE_ID`. A variável
-`OCI_SPEECH_VOICE_ID` não é consumida por este script.
-
-Profiles com `security_token_file` precisam estar autenticados e dentro da validade. Um
-profile diferente pode ser usado somente para o processo, sem editar o `.env`:
-
-```bash
-OCI_SPEECH_PROFILE=DEFAULT \
-python scripts/test_oci_speech_fallback.py \
-  --env-file .env
-```
-
-O processo retorna código `0` em caso de sucesso e `1` quando o fallback não gera áudio ou alguma
-configuração é inválida.
-
-
-## Testes
+## Tests
 
 ```bash
 pytest
 ruff check .
 ```
 
-Os testes unitários não fazem chamadas externas nem exigem credenciais OCI.
+Unit tests make no external calls and require no OCI credentials.
