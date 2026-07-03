@@ -13,7 +13,7 @@ AgentSession
             -> AsyncConnectionPool
                  -> WebSocket OCI xAI
        -> fallback escolhido pelo usuário
-            -> OciSpeechTTS
+            -> oracle.TTS
                  -> OCI SDK / HTTPS
             -> plugin ElevenLabs
             -> qualquer outro livekit.agents.tts.TTS
@@ -31,12 +31,13 @@ sessão do serviço.
 
 ## OCI Speech
 
-`OciSpeechTTS` declara `streaming=False`, pois precisa receber a fala completa antes da
-requisição. `synthesize()` executa o SDK síncrono em uma thread, lê a resposta progressivamente
-e entrega os bytes ao `AudioEmitter`. O LiveKit decodifica WAV ou MP3 para frames PCM.
+`oracle.TTS` declara `streaming=False`, pois OCI Speech precisa receber a fala completa
+antes da requisição. Internamente, envia `is_stream_enabled=True`, executa o SDK em uma thread
+e consome `response.data.raw.stream()`. Os chunks PCM são entregues ao `AudioEmitter` assim
+que chegam, sem manter uma sessão TTS aberta entre falas.
 
-Quando a cadeia é usada pela API streaming, o próprio `FallbackAdapter` envolve providers não
-streaming com o `StreamAdapter` e segmenta o texto em frases.
+Quando a cadeia recebe texto incremental, o próprio `FallbackAdapter` envolve o plugin com
+`StreamAdapter` e segmenta o texto em frases.
 
 ## Falha e recuperação
 

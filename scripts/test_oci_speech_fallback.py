@@ -8,8 +8,9 @@ import sys
 import time
 import wave
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
+import oci
 from livekit.agents import (
     DEFAULT_API_CONNECT_OPTIONS,
     APIConnectionError,
@@ -17,10 +18,9 @@ from livekit.agents import (
     tts,
 )
 
+import oracle
 from livekit_tts_fallback import (
     FallbackPolicy,
-    OciSpeechConfig,
-    OciSpeechTTS,
     OciXaiConfig,
     OciXaiTTS,
     build_fallback_tts,
@@ -73,9 +73,9 @@ class ForcedFailureStream(tts.ChunkedStream):
         )
 
 
-class RecordingOciSpeechTTS(OciSpeechTTS):
-    def __init__(self, config: OciSpeechConfig) -> None:
-        super().__init__(config)
+class RecordingOracleTTS(oracle.TTS):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.synthesis_calls = 0
 
     def synthesize(
@@ -150,29 +150,48 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def build_oci_speech() -> RecordingOciSpeechTTS:
+def livekit_output_format() -> str:
+    configured = os.getenv("OCI_SPEECH_TTS_FORMAT", "PCM").strip().upper()
+    if configured != "PCM":
+        logger.warning(
+            "overriding OCI_SPEECH_TTS_FORMAT=%s with PCM; "
+            "oracle.TTS emits decoded PCM frames to LiveKit",
+            configured,
+        )
+    return "PCM"
+
+
+def build_oci_speech() -> RecordingOracleTTS:
     auth = required_env("OCI_SPEECH_AUTH").lower()
     if auth not in {"config", "instance_principal", "resource_principal"}:
         raise RuntimeError(f"unsupported OCI_SPEECH_AUTH: {auth}")
 
-    return RecordingOciSpeechTTS(
-        OciSpeechConfig(
-            auth=cast("object", auth),  # narrowed and validated immediately above
-            config_file=optional_env("OCI_SPEECH_CONFIG_FILE"),
-            profile=os.getenv("OCI_SPEECH_PROFILE", "DEFAULT"),
-            region=optional_env("OCI_SPEECH_REGION"),
-            service_endpoint=optional_env("OCI_SPEECH_ENDPOINT"),
-            compartment_id=required_env("OCI_SPEECH_COMPARTMENT_ID"),
-            model_name=os.getenv("OCI_SPEECH_TTS_MODEL", "TTS_2_NATURAL"),
-            voice_id=required_env("OCI_SPEECH_TTS_VOICE_ID"),
-            language_code=os.getenv("OCI_SPEECH_TTS_LANGUAGE", "pt-BR"),
-            output_format=os.getenv("OCI_SPEECH_TTS_FORMAT", "wav"),
-            stream_enabled=env_bool("OCI_SPEECH_TTS_STREAM_ENABLED", True),
-            chunk_size=int(os.getenv("OCI_SPEECH_TTS_CHUNK_SIZE", "8192")),
-            read_timeout_s=float(os.getenv("OCI_SPEECH_TTS_TIMEOUT", "30")),
-            connect_timeout_s=float(os.getenv("OCI_SPEECH_TTS_CONNECT_TIMEOUT", "10")),
-            max_concurrency=1,
+    config = None
+    config_file = optional_env("OCI_SPEECH_CONFIG_FILE")
+    profile = os.getenv("OCI_SPEECH_PROFILE", "DEFAULT")
+    if auth == "config":
+        config = oci.config.from_file(
+            file_location=config_file or oci.config.DEFAULT_LOCATION,
+            profile_name=profile,
         )
+
+    return RecordingOracleTTS(
+        config=config,
+        auth=cast("Any", auth),
+        config_file=config_file,
+        profile=profile,
+        region=os.getenv("OCI_SPEECH_REGION", "us-ashburn-1"),
+        service_endpoint=optional_env("OCI_SPEECH_ENDPOINT"),
+        compartment_id=required_env("OCI_SPEECH_COMPARTMENT_ID"),
+        model_name=os.getenv("OCI_SPEECH_TTS_MODEL", "TTS_2_NATURAL"),
+        voice_id=required_env("OCI_SPEECH_TTS_VOICE_ID"),
+        language_code=os.getenv("OCI_SPEECH_TTS_LANGUAGE", "pt-BR"),
+        samples_rate_in_hz=int(os.getenv("OCI_SPEECH_TTS_SAMPLE_RATE", "24000")),
+        output_format=cast("Any", livekit_output_format()),
+        is_stream_enabled=env_bool("OCI_SPEECH_TTS_STREAM_ENABLED", True),
+        chunk_size=int(os.getenv("OCI_SPEECH_TTS_CHUNK_SIZE", "8192")),
+        read_timeout_s=float(os.getenv("OCI_SPEECH_TTS_TIMEOUT", "30")),
+        connect_timeout_s=float(os.getenv("OCI_SPEECH_TTS_CONNECT_TIMEOUT", "10")),
     )
 
 

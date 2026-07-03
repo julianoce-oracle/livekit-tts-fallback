@@ -16,7 +16,7 @@ from livekit.agents import (
     tts,
 )
 from test_oci_speech_fallback import (
-    RecordingOciSpeechTTS,
+    RecordingOracleTTS,
     build_oci_speech,
     build_real_primary,
     load_env_file,
@@ -185,7 +185,7 @@ async def synthesize_once(
     chain: tts.TTS,
     *,
     primary: WindowedFailureTTS,
-    fallback: RecordingOciSpeechTTS,
+    fallback: RecordingOracleTTS,
     text: str,
     timeout_s: float,
 ) -> RequestResult:

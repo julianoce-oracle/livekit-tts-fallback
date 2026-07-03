@@ -4,9 +4,9 @@ Biblioteca Python para compor uma cadeia de TTS usando o
 `livekit.agents.tts.FallbackAdapter`.
 
 O provider principal incluído é OCI Generative AI xAI Voice por WebSocket. O usuário
-escolhe explicitamente os fallbacks. A biblioteca inclui OCI Speech e um helper opcional
-para o plugin oficial da ElevenLabs, mas aceita qualquer implementação de
-`livekit.agents.tts.TTS`.
+escolhe explicitamente os fallbacks. Para OCI Speech, o pacote inclui o plugin `oracle`
+e o utiliza como qualquer outra implementação de `livekit.agents.tts.TTS`. Também existe
+um helper opcional para o plugin oficial da ElevenLabs.
 
 ## Arquitetura
 
@@ -19,7 +19,7 @@ para o plugin oficial da ElevenLabs, mas aceita qualquer implementação de
 - Se uma fala já começou, o LiveKit não reinicia o texto em outro provider.
 - Providers indisponíveis são recuperados pelo mecanismo nativo do LiveKit.
 - OCI xAI reaproveita sessões WebSocket entre falas por meio de um pool.
-- OCI Speech reutiliza o cliente SDK, mas abre uma requisição HTTPS por fala.
+- `oracle.TTS` reutiliza o cliente SDK e recebe o áudio PCM em chunks HTTPS por fala.
 - ElevenLabs e providers externos gerenciam seus próprios transportes.
 - Sample rates diferentes são reamostrados pelo `FallbackAdapter`; todos os providers
   precisam produzir áudio mono.
@@ -60,15 +60,22 @@ Nunca versione `.env`, API keys, arquivos de chave privada ou áudios gerados.
 ## OCI xAI principal com OCI Speech como fallback
 
 ```python
+import os
+
+import oci
+import oracle
 from livekit.agents import AgentSession
 
 from livekit_tts_fallback import (
     FallbackPolicy,
-    OciSpeechConfig,
-    OciSpeechTTS,
     OciXaiConfig,
     OciXaiTTS,
     build_fallback_tts,
+)
+
+config = oci.config.from_file(
+    file_location=os.getenv("OCI_SPEECH_CONFIG_FILE") or oci.config.DEFAULT_LOCATION,
+    profile_name=os.getenv("OCI_SPEECH_PROFILE", "DEFAULT"),
 )
 
 primary = OciXaiTTS(
@@ -80,13 +87,13 @@ primary = OciXaiTTS(
     )
 )
 
-oci_speech = OciSpeechTTS(
-    OciSpeechConfig(
-        compartment_id="COMPARTMENT_OCID",
-        voice_id="VOICE_ID_AVAILABLE_IN_THE_SELECTED_REGION",
-        region="us-ashburn-1",
-        profile="DEFAULT",
-    )
+oci_speech = oracle.TTS(
+    config=config,
+    region="us-ashburn-1",
+    compartment_id=os.environ["OCI_SPEECH_COMPARTMENT_ID"],
+    voice_id=os.environ["OCI_SPEECH_TTS_VOICE_ID"],
+    language_code="pt-BR",
+    samples_rate_in_hz=24_000,
 )
 
 fallback_tts = build_fallback_tts(
@@ -103,6 +110,11 @@ session = AgentSession(
     # stt=..., llm=..., vad=...
 )
 ```
+
+O plugin `oracle.TTS` envia `is_stream_enabled=True` para OCI Speech e consome
+`response.data.raw.stream()`. Ele declara `streaming=False` no LiveKit porque precisa
+receber o texto completo antes de iniciar cada requisição; isso não desativa os chunks de
+áudio da resposta HTTPS.
 
 Nenhum fallback é adicionado automaticamente. Para usar somente OCI xAI:
 
@@ -188,11 +200,14 @@ WebSocket. Ela pode ser passada diretamente em `OciXaiConfig.api_key` ou lida da
 configurada por `api_key_env`.
 Os parâmetros opcionais `optimize_streaming_latency` e `text_normalization` são omitidos por padrão. Quando configurado, o nível de otimização deve ser `0`, `1` ou `2`.
 
-OCI Speech suporta:
+`oracle.TTS` suporta:
 
+- o `config` já carregado, como no exemplo acima;
 - profile do arquivo OCI, incluindo profile com `security_token_file`;
-- instance principal;
-- resource principal.
+- instance principal com `auth="instance_principal"`;
+- resource principal com `auth="resource_principal"`.
+
+O plugin não registra o conteúdo do `config`, compartment OCID, texto ou áudio.
 
 Credenciais, textos e áudio não são registrados nos logs da biblioteca.
 
@@ -329,9 +344,10 @@ python scripts/test_oci_speech_fallback.py \
 Para OCI Speech, o script lê `OCI_SPEECH_AUTH`, `OCI_SPEECH_CONFIG_FILE`,
 `OCI_SPEECH_PROFILE`, `OCI_SPEECH_REGION`, `OCI_SPEECH_ENDPOINT`,
 `OCI_SPEECH_COMPARTMENT_ID`, `OCI_SPEECH_TTS_MODEL`, `OCI_SPEECH_TTS_VOICE_ID`,
-`OCI_SPEECH_TTS_LANGUAGE`, `OCI_SPEECH_TTS_FORMAT`, `OCI_SPEECH_TTS_TIMEOUT`,
+`OCI_SPEECH_TTS_LANGUAGE`, `OCI_SPEECH_TTS_SAMPLE_RATE`,
+`OCI_SPEECH_TTS_FORMAT`, `OCI_SPEECH_TTS_TIMEOUT`,
 `OCI_SPEECH_TTS_CONNECT_TIMEOUT`, `OCI_SPEECH_TTS_CHUNK_SIZE` e
-`OCI_SPEECH_TTS_STREAM_ENABLED`.
+`OCI_SPEECH_TTS_STREAM_ENABLED`. O plugin exige formato `PCM` e streaming habilitado.
 
 No modo `--real-primary`, também lê `OCI_XAI_API_KEY` (ou `OCI_GENAI_API_KEY` por compatibilidade), `OCI_XAI_REGION`,
 `OCI_XAI_ENDPOINT`, `OCI_XAI_VOICE` e `OCI_XAI_LANGUAGE`.
